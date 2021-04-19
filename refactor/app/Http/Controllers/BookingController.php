@@ -35,17 +35,23 @@ class BookingController extends Controller
      */
     public function index(Request $request)
     {
-        if($user_id = $request->get('user_id')) {
+        $response = [];
 
+        if ($user_id = (int)$request->get('user_id')) {
             $response = $this->repository->getUsersJobs($user_id);
-
         }
-        elseif($request->__authenticatedUser->user_type == env('ADMIN_ROLE_ID') || $request->__authenticatedUser->user_type == env('SUPERADMIN_ROLE_ID'))
-        {
+        // get config variables from app config file instead of accessing it directly with `env()` helper method
+        // one statement per line
+        elseif (isset($request->__authenticatedUser) &&
+            ($request->__authenticatedUser->user_type == config('app.ADMIN_ROLE_ID') ||
+                $request->__authenticatedUser->user_type == config('app.SUPERADMIN_ROLE_ID'))
+        ) {
             $response = $this->repository->getAll($request);
         }
 
-        return response($response);
+        // response should be in json/xml and the proper status code
+        // status code is extracted from \Illuminate\Http\Response
+        return response()->json($response, Response::HTTP_OK);
     }
 
     /**
@@ -54,37 +60,57 @@ class BookingController extends Controller
      */
     public function show($id)
     {
-        $job = $this->repository->with('translatorJobRel.user')->find($id);
-
-        return response($job);
+        // check for the entity in the db and return 404 if it's not exists.
+        if (!$job = $this->repository->with('translatorJobRel.user')->find($id)) {
+            return response()->json(['message' => 'Job not found'], Response::HTTP_NOT_FOUND);
+        }
+        return response()->json($job, Response::HTTP_OK);
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function store(Request $request)
+    // e.g StoreBookRequest and define validation rules in that file
+    public function store(StoreBookRequest $request)
     {
-        $data = $request->all();
-
-        $response = $this->repository->store($request->__authenticatedUser, $data);
-
-        return response($response);
-
+        try {
+            // use validated menthod instead and get the data validated from StoreBookRequest
+            $response = $this->repository->store($request->__authenticatedUser, $request->validated());
+            return response()->json($response, Response::HTTP_CREATED);
+        } catch (\Throwable $e) {
+            // log this exception
+            Log::critical('BOOK_CREATION_FAILED', [
+                'message' => $e->getMessage(),
+                'stack' => $e->getTraceAsString(),
+                'line' => $e->getLine(),
+            ]);
+            return response()->json(['message' => 'New book creation failed'], Response::HTTP_INTERNEL_SERVER_ERROR);
+        }
     }
 
     /**
      * @param $id
-     * @param Request $request
+     * @param UpdateBookRequest $request
      * @return mixed
      */
-    public function update($id, Request $request)
+    // define validation rules in UpdateBookRequest
+    public function update($id, UpdateBookRequest $request)
     {
-        $data = $request->all();
-        $cuser = $request->__authenticatedUser;
-        $response = $this->repository->updateJob($id, array_except($data, ['_token', 'submit']), $cuser);
-
-        return response($response);
+        // get the validated data instead of ->all()
+        // here just add $data and define fillables in the Model
+        try {
+            $response = $this->repository->updateJob($id, $request->validated(), $request->__authenticatedUser);
+            return response()->json($response, Response::HTTP_OK);
+        } catch (\Throwable $e) {
+            // log this exception
+            Log::critical('BOOK_UPDATION_FAILED', [
+                'message' => $e->getMessage(),
+                'stack' => $e->getTraceAsString(),
+                'line' => $e->getLine(),
+            ]);
+            return response()->json(['message' => 'Book update failed'], Response::HTTP_INTERNEL_SERVER_ERROR);
+        }
     }
 
     /**
@@ -93,12 +119,18 @@ class BookingController extends Controller
      */
     public function immediateJobEmail(Request $request)
     {
-        $adminSenderEmail = config('app.adminemail');
-        $data = $request->all();
-
-        $response = $this->repository->storeJobEmail($data);
-
-        return response($response);
+        try {
+            $response = $this->repository->storeJobEmail($request->validated());
+            return response()->json($response, Response::HTTP_OK);
+        } catch (\Throwable $e) {
+            // log this exception
+            Log::critical('JOB_EMAIL_FAILED', [
+                'message' => $e->getMessage(),
+                'stack' => $e->getTraceAsString(),
+                'line' => $e->getLine(),
+            ]);
+            return response()->json(['message' => 'Job email has been failed'], Response::HTTP_INTERNEL_SERVER_ERROR);
+        }
     }
 
     /**
@@ -107,37 +139,32 @@ class BookingController extends Controller
      */
     public function getHistory(Request $request)
     {
-        if($user_id = $request->get('user_id')) {
-
+        $response = [];
+        if ($user_id = $request->get('user_id')) {
+            // $request should not be passed to the repository instead you can pass validated data
+            // but i would not refactor it for now
             $response = $this->repository->getUsersJobsHistory($user_id, $request);
-            return response($response);
         }
-
-        return null;
+        return response()->json($response, Response::HTTP_OK);
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function acceptJob(Request $request)
+    // AcceptJobRequest
+    public function acceptJob(AcceptJobRequest $request)
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->acceptJob($data, $user);
-
-        return response($response);
+        $response = $this->repository->acceptJob($request->validated(), $request->__authenticatedUser);
+        return response()->json($response, Response::HTTP_OK);
     }
 
     public function acceptJobWithId(Request $request)
     {
-        $data = $request->get('job_id');
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->acceptJobWithId($data, $user);
-
-        return response($response);
+        // variables should be named properly
+        $job_id = (int)$request->get('job_id');
+        $response = $this->repository->acceptJobWithId($job_id, $request->__authenticatedUser);
+        return response()->json($response, Response::HTTP_OK);
     }
 
     /**
@@ -146,12 +173,8 @@ class BookingController extends Controller
      */
     public function cancelJob(Request $request)
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->cancelJobAjax($data, $user);
-
-        return response($response);
+        $response = $this->repository->cancelJobAjax($request->validated(), $request->__authenticatedUser);
+        return response()->json($response, Response::HTTP_OK);
     }
 
     /**
@@ -160,22 +183,14 @@ class BookingController extends Controller
      */
     public function endJob(Request $request)
     {
-        $data = $request->all();
-
-        $response = $this->repository->endJob($data);
-
-        return response($response);
-
+        $response = $this->repository->endJob($request->validated());
+        return response()->json($response, Response::HTTP_OK);
     }
 
     public function customerNotCall(Request $request)
     {
-        $data = $request->all();
-
-        $response = $this->repository->customerNotCall($data);
-
-        return response($response);
-
+        $response = $this->repository->customerNotCall($request->validated());
+        return response()->json($response, Response::HTTP_OK);
     }
 
     /**
@@ -184,92 +199,63 @@ class BookingController extends Controller
      */
     public function getPotentialJobs(Request $request)
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->getPotentialJobs($user);
-
-        return response($response);
+        $response = $this->repository->getPotentialJobs($request->__authenticatedUser);
+        return response()->json($response, Response::HTTP_OK);
     }
 
-    public function distanceFeed(Request $request)
+    /*
+     * use Request validation rules instead and use the proper request class for this
+     * DistanceFeedRequest
+     * and validate all the params to this class and then get the validated data from it
+     * with $request->validated() method
+     */
+    public function distanceFeed(DistanceFeedRequest $request)
     {
-        $data = $request->all();
+        $validated = $request->validated();
 
-        if (isset($data['distance']) && $data['distance'] != "") {
-            $distance = $data['distance'];
-        } else {
-            $distance = "";
-        }
-        if (isset($data['time']) && $data['time'] != "") {
-            $time = $data['time'];
-        } else {
-            $time = "";
-        }
-        if (isset($data['jobid']) && $data['jobid'] != "") {
-            $jobid = $data['jobid'];
-        }
+        // handle this in Request file with validation rules
+//        if ($data['flagged'] == 'true') {
+//            if($data['admincomment'] == '') return "Please, add comment";
+//            $flagged = 'yes';
+//        } else {
+//            $flagged = 'no';
+//        }
 
-        if (isset($data['session_time']) && $data['session_time'] != "") {
-            $session = $data['session_time'];
-        } else {
-            $session = "";
+        if (isset($validated['time']) && isset($validated['distance'])) {
+            Distance::where('job_id', '=', $validated['jobid'])->update([
+                'distance' => $validated['distance'],
+                'time' => $validated['time']
+            ]);
         }
 
-        if ($data['flagged'] == 'true') {
-            if($data['admincomment'] == '') return "Please, add comment";
-            $flagged = 'yes';
-        } else {
-            $flagged = 'no';
-        }
-        
-        if ($data['manually_handled'] == 'true') {
-            $manually_handled = 'yes';
-        } else {
-            $manually_handled = 'no';
+        if ($validated['admincomment'] || $validated['session_time'] || $validated['flagged'] || $validated['manually_handled'] || $validated['by_admin']) {
+            Job::where('id', '=', $validated['jobid'])
+                ->update([
+                    'admin_comments'   => $validated['admincomment'],
+                    'flagged'          => $validated['flagged'] === 'true' ? 'yes' : 'no',
+                    'session_time'     => $validated['session_time'],
+                    'manually_handled' => $validated['manually_handled'] === 'true' ? 'yes' : 'no',
+                    'by_admin'         => $validated['by_admin'] === 'true' ? 'yes' : "no",
+                ]);
         }
 
-        if ($data['by_admin'] == 'true') {
-            $by_admin = 'yes';
-        } else {
-            $by_admin = 'no';
-        }
-
-        if (isset($data['admincomment']) && $data['admincomment'] != "") {
-            $admincomment = $data['admincomment'];
-        } else {
-            $admincomment = "";
-        }
-        if ($time || $distance) {
-
-            $affectedRows = Distance::where('job_id', '=', $jobid)->update(array('distance' => $distance, 'time' => $time));
-        }
-
-        if ($admincomment || $session || $flagged || $manually_handled || $by_admin) {
-
-            $affectedRows1 = Job::where('id', '=', $jobid)->update(array('admin_comments' => $admincomment, 'flagged' => $flagged, 'session_time' => $session, 'manually_handled' => $manually_handled, 'by_admin' => $by_admin));
-
-        }
-
-        return response('Record updated!');
+        return response()->json(['message' => 'Record updated!'], Response::HTTP_OK);
     }
 
     public function reopen(Request $request)
     {
-        $data = $request->all();
-        $response = $this->repository->reopen($data);
-
-        return response($response);
+        $response = $this->repository->reopen($request->validated());
+        return response()->json($response, Response::HTTP_OK);
     }
 
     public function resendNotifications(Request $request)
     {
-        $data = $request->all();
-        $job = $this->repository->find($data['jobid']);
+        // make `jobid` required in request file and get it like this $request->jobid instead of getting all request params
+        // use try/catch as well
+        $job = $this->repository->find($request->jobid);
         $job_data = $this->repository->jobToData($job);
         $this->repository->sendNotificationTranslator($job, $job_data, '*');
-
-        return response(['success' => 'Push sent']);
+        return response()->json(['message' => 'Notification sent!'], Response::HTTP_OK);
     }
 
     /**
@@ -279,15 +265,22 @@ class BookingController extends Controller
      */
     public function resendSMSNotifications(Request $request)
     {
-        $data = $request->all();
-        $job = $this->repository->find($data['jobid']);
-        $job_data = $this->repository->jobToData($job);
+        // make `jobid` required in request file and get it like this $request->jobid instead of getting all request params
+        $job = $this->repository->find($request->jobid);
+        // remove unused jobdata
+//        $job_data = $this->repository->jobToData($job);
 
         try {
             $this->repository->sendSMSNotificationToTranslator($job);
-            return response(['success' => 'SMS sent']);
-        } catch (\Exception $e) {
-            return response(['success' => $e->getMessage()]);
+            return response()->json(['message' => 'SMS sent!'], Response::HTTP_OK);
+        } catch (\Throwable $e) {
+            // log this exception
+            Log::critical('SMS_NOTIFICATION_FAILED', [
+                'message' => $e->getMessage(),
+                'stack' => $e->getTraceAsString(),
+                'line' => $e->getLine(),
+            ]);
+            return response()->json(['message' => 'sms notification has been failed'], Response::HTTP_INTERNEL_SERVER_ERROR);
         }
     }
 
